@@ -454,3 +454,7 @@ def convert_dataset(
 
 if __name__ == "__main__":
     convert_dataset() # pylint: disable=no-value-for-parameter
+
+'''
+python dataset_tool.py --source=/mnt/data/feature_extraction/myxo/imgnet_gray/train_manual_all/images_clahe_crop --dest=datasets/myxo1-256x256.zip
+'''

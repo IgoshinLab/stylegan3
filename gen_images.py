@@ -100,6 +100,10 @@ def generate_images(
     # Generate uncurated images with truncation using the MetFaces-U dataset
     python gen_images.py --outdir=out --trunc=0.7 --seeds=600-605 \\
         --network=https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-t-metfacesu-1024x1024.pkl
+
+    \b
+    python gen_images.py --outdir=out --seeds=1-100 --noise-mode=random \\
+    --network=training-runs/00007-stylegan2-myxo-256x256-gpus1-batch32-gamma10/network-snapshot-000800.pkl
     """
 
     print('Loading networks from "%s"...' % network_pkl)

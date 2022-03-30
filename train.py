@@ -23,7 +23,7 @@ from torch_utils import training_stats
 from torch_utils import custom_ops
 
 #----------------------------------------------------------------------------
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 def subprocess_fn(rank, c, temp_dir):
     dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
 
@@ -182,6 +182,12 @@ def main(**kwargs):
     # Train StyleGAN2 for FFHQ at 1024x1024 resolution using 8 GPUs.
     python train.py --outdir=~/training-runs --cfg=stylegan2 --data=~/datasets/ffhq-1024x1024.zip \\
         --gpus=8 --batch=32 --gamma=10 --mirror=1 --aug=noaug
+
+    \b
+    python train.py --outdir=training-runs --cmax=32 --aug=ada --cfg=stylegan2 --data=datasets/myxo-256x256.zip --gpus=1 --batch=32 --gamma=10 --mirror=1 --kimg=1000
+
+    python train.py --outdir=training-runs --cfg=stylegan2 --data=datasets/myxo1-256x256.zip --gpus=1 --batch=16 --gamma=10 --mirror=1 --aug=ada --kimg=1000
+
     """
 
     # Initialize config.
