@@ -22,8 +22,9 @@ from metrics import metric_main
 from torch_utils import training_stats
 from torch_utils import custom_ops
 
+os.environ['CC'] = "/usr/bin/gcc-9"
+os.environ['CXX'] = "/usr/bin/g++-9"
 #----------------------------------------------------------------------------
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 def subprocess_fn(rank, c, temp_dir):
     dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
 
@@ -99,13 +100,16 @@ def launch_training(c, desc, outdir, dry_run):
 
 #----------------------------------------------------------------------------
 
-def init_dataset_kwargs(data):
+def init_dataset_kwargs(data, label_dict):
     try:
-        dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data, use_labels=True, max_size=None, xflip=False)
-        dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs) # Subclass of training.dataset.Dataset.
-        dataset_kwargs.resolution = dataset_obj.resolution # Be explicit about resolution.
-        dataset_kwargs.use_labels = dataset_obj.has_labels # Be explicit about labels.
-        dataset_kwargs.max_size = len(dataset_obj) # Be explicit about dataset size.
+        dataset_kwargs = dnnlib.EasyDict(class_name='dataloaders.PairedMyxo.PairedMyxo', resolution=512, resize_by=1.,
+                                         path=data, use_labels=True, max_size=None, xflip=False, use_rgb=False,
+                                         mode="random",
+                                         label_dict=label_dict)
+        dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)  # Subclass of training.dataset.Dataset.
+        dataset_kwargs.resolution = dataset_obj.resolution  # Be explicit about resolution.
+        dataset_kwargs.use_labels = dataset_obj.has_labels  # Be explicit about labels.
+        dataset_kwargs.max_size = len(dataset_obj)  # Be explicit about dataset size.
         return dataset_kwargs, dataset_obj.name
     except IOError as err:
         raise click.ClickException(f'--data: {err}')
@@ -124,12 +128,19 @@ def parse_comma_separated_list(s):
 @click.command()
 
 # Required.
-@click.option('--outdir',       help='Where to save the results', metavar='DIR',                required=True)
-@click.option('--cfg',          help='Base configuration',                                      type=click.Choice(['stylegan3-t', 'stylegan3-r', 'stylegan2']), required=True)
-@click.option('--data',         help='Training data', metavar='[ZIP|DIR]',                      type=str, required=True)
-@click.option('--gpus',         help='Number of GPUs to use', metavar='INT',                    type=click.IntRange(min=1), required=True)
-@click.option('--batch',        help='Total batch size', metavar='INT',                         type=click.IntRange(min=1), required=True)
-@click.option('--gamma',        help='R1 regularization weight', metavar='FLOAT',               type=click.FloatRange(min=0), required=True)
+@click.option('--outdir', help='Where to save the results', metavar='DIR',
+              default='/home/xavier/PycharmProjects/training-runs/test', required=True)
+@click.option('--cfg',  default="stylegan2",        help='Base configuration',                                      type=click.Choice(['stylegan3-t', 'stylegan3-r', 'stylegan2']), required=True)
+@click.option('--data', help='Training data', metavar='[ZIP|DIR]',
+              default="/home/xavier/Documents/dataset/Welch/trainingset2/trainingset2", type=str, required=True)
+@click.option('--label-dict', help='The label dictionary',
+              default='/home/xavier/Documents/dataset/Welch/trainingset2/InceptionV3-labels.pkl', type=str,
+              required=True)
+@click.option('--gpus', help='Number of GPUs to use', metavar='INT', default=1, type=click.IntRange(min=1),
+              required=True)
+@click.option('--batch', help='Total batch size', metavar='INT', default=4, type=click.IntRange(min=1), required=True)
+@click.option('--gamma', help='R1 regularization weight', metavar='FLOAT', default=10, type=click.FloatRange(min=0),
+              required=True)
 
 # Optional features.
 @click.option('--cond',         help='Train conditional model', metavar='BOOL',                 type=bool, default=False, show_default=True)
@@ -201,7 +212,7 @@ def main(**kwargs):
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
 
     # Training set.
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(data=opts.data)
+    c.training_set_kwargs, dataset_name = init_dataset_kwargs(data=opts.data, label_dict=opts.label_dict)
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException('--cond=True requires labels specified in dataset.json')
     c.training_set_kwargs.use_labels = opts.cond
