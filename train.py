@@ -21,8 +21,8 @@ from training import training_loop
 from metrics import metric_main
 from torch_utils import training_stats
 from torch_utils import custom_ops
-os.environ['CC'] = "/usr/bin/gcc-9"
-os.environ['CXX'] = "/usr/bin/g++-9"
+# os.environ['CC'] = "/usr/bin/gcc-9"
+# os.environ['CXX'] = "/usr/bin/g++-9"
 #----------------------------------------------------------------------------
 def subprocess_fn(rank, c, temp_dir):
     dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
