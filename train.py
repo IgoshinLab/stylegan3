@@ -21,7 +21,6 @@ from training import training_loop
 from metrics import metric_main
 from torch_utils import training_stats
 from torch_utils import custom_ops
-
 os.environ['CC'] = "/usr/bin/gcc-9"
 os.environ['CXX'] = "/usr/bin/g++-9"
 #----------------------------------------------------------------------------
