@@ -7,7 +7,7 @@
 #SBATCH --mail-user=jz79@rice.edu
 #SBATCH --mail-type=ALL
 #SBATCH --gres=gpu:4
-#SBATCH --time=72:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/scratch/jz79/Welch/training-runs/stylegan2/run_debug
 #SBATCH --mem=200G
 #SBATCH --cpus-per-task=24
