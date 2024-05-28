@@ -32,11 +32,13 @@ class PairedMyxo(Dataset):
                  norm_max=1,
                  num_output=1,
                  return_name=False,
-                 label_dict="/home/xavier/Documents/dataset/Welch/trainingset2/InceptionV3-labels.pkl",
+                 label_dict=None,
                  use_rgb=False,
-                 brightness_norm=True,
+                 brightness_norm=0,
                  brightness_mean=107.2,
                  brightness_std=5.8,
+                 flip_rate=.5,
+                 fixed_rotate=None,
                  **super_kwargs,  # Additional arguments for the Dataset base class.
                  ):
         self._path = path
@@ -50,12 +52,15 @@ class PairedMyxo(Dataset):
         self.brightness_norm = brightness_norm
         self.brightness_mean = brightness_mean
         self.brightness_std = brightness_std
+        self.flip_rate = flip_rate
         self.crop_size = resolution
         self.crop_diag = np.sqrt(np.square(resolution) * 2)
         self.normalize = normalize
         self.norm_min = norm_min
         self.norm_max = norm_max
         self.num_output = num_output
+        self.fixed_rotate = fixed_rotate
+        self._image_labels = None
 
         if os.path.isdir(self._path):
             self._type = 'dir'
@@ -68,12 +73,48 @@ class PairedMyxo(Dataset):
             raise IOError('Path must point to a directory or zip')
 
         PIL.Image.init()
-        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
+        if self.label_dict:
+            label_dict = pkl.load(open(self.label_dict, "rb"))
+            all_images = {}
+            for phenotype in label_dict:
+                for image_name in label_dict[phenotype]:
+                    all_images[image_name] = phenotype
+            self._image_fnames = []
+            self._image_labels = []
+            for image_name in all_images:
+                if image_name in self._all_fnames:
+                    if self._file_ext(image_name) in PIL.Image.EXTENSION:
+                        self._image_fnames.append(image_name)
+                        self._image_labels.append(all_images[image_name])
+                else:
+                    raise IOError(f'The image file {image_name} does not exist')
+            self._image_labels = np.array(self._image_labels)
+            del all_images
+        else:
+            self._image_fnames = sorted(
+                fname for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
+            self._image_labels = np.zeros(len(self._image_fnames), dtype=int)
+
         if len(self._image_fnames) == 0:
             raise IOError('No image files found in the specified path')
 
         name = os.path.splitext(os.path.basename(self._path))[0]
         raw_shape = [len(self._image_fnames)] + [1, self.resolution, self.resolution]
+
+        self.rotate_parameters = []
+        if self.fixed_rotate is not None:
+            initialize_rotate_parameters = True
+            if os.path.exists(self.fixed_rotate):
+                self.rotate_parameters = pkl.load(open(self.fixed_rotate, "rb"))
+                if len(self.rotate_parameters) == len(self._image_fnames):
+                    initialize_rotate_parameters = False
+            if initialize_rotate_parameters:
+                print("Initializing rotation parameters...")
+                for image_name in self._image_fnames:
+                    img_size = cv2.imread(os.path.join(self._path, image_name), cv2.IMREAD_UNCHANGED).shape
+                    self.rotate_parameters.append(self.get_rotate_parameters(img_size))
+                    pkl.dump(self.rotate_parameters, open(self.fixed_rotate, "wb"))
+
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
@@ -110,11 +151,14 @@ class PairedMyxo(Dataset):
     def _load_raw_image(self, raw_idx):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
-            if pyspng is not None and self._file_ext(fname) == '.png':
-                image = pyspng.load(f.read())
-            else:
-                image = cv2.imread(os.path.join(self._path, fname),
-                                   cv2.IMREAD_UNCHANGED)  # IMREAD_UNCHANGED loads the image as is, including alpha channel if present
+            if self._type == 'dir':
+                if pyspng is not None and self._file_ext(fname) == '.png':
+                    image = pyspng.load(f.read())
+                else:
+                    image = cv2.imread(os.path.join(self._path, fname),
+                                       cv2.IMREAD_UNCHANGED)  # IMREAD_UNCHANGED loads the image as is, including alpha channel if present
+            if self._type == 'zip':
+                image = cv2.imdecode(np.frombuffer(self._zipfile.read(fname), np.uint8), cv2.IMREAD_UNCHANGED)
 
         # Convert from BGR to RGB (OpenCV loads images in BGR)
         if len(image.shape) == 3:
@@ -130,7 +174,7 @@ class PairedMyxo(Dataset):
             image = cv2.resize(image, shape, cv2.INTER_LANCZOS4)
 
         # Adjust brightness
-        if self.brightness_norm and random.random() > 0.5:
+        if random.random() < self.brightness_norm:
             target = np.random.normal(self.brightness_mean, self.brightness_std)
             obj_v = np.mean(image)
             value = target - obj_v
@@ -140,64 +184,25 @@ class PairedMyxo(Dataset):
         if self.use_rgb and len(image.shape) == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
         elif not self.use_rgb and len(image.shape) == 3:
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         return image
 
     def _load_raw_labels(self):
-        label_dict = pkl.load(open(self.label_dict, "rb"))
-        name2label = {}
-        for item in label_dict:
-            for img_name in label_dict[item]:
-                name2label[img_name] = item
-        labels = [name2label[fname] for fname in self._image_fnames]
+        if self.label_dict:
+            label_dict = pkl.load(open(self.label_dict, "rb"))
+            name2label = {}
+            for item in label_dict:
+                for img_name in label_dict[item]:
+                    name2label[img_name] = item
+            labels = [name2label[fname] for fname in self._image_fnames]
+        else:
+            labels = np.zeros(len(self._image_fnames), dtype=int)
         return np.array(labels)
-
-    # def rotate_image(self, image):
-    #     rot_images = []
-    #     h, w = image.shape[:2]
-    #
-    #     for _ in range(self.num_output):
-    #         # Generate random rotation angle
-    #         angle = float(np.random.uniform(-180, 180))
-    #
-    #         new_len = np.max([abs(self.crop_diag * np.cos((angle + 45) / 180 * np.pi)),
-    #                           abs(self.crop_diag * np.sin((angle + 45) / 180 * np.pi))])
-    #         new_len = int(np.ceil(new_len))
-    #         x_sample = np.random.randint(new_len // 2, h - np.ceil(new_len / 2))
-    #         y_sample = np.random.randint(new_len // 2, w - np.ceil(new_len / 2))
-    #
-    #         x_min = min([x_sample, 0])
-    #         y_min = min([y_sample, 0])
-    #
-    #         image_ready = image[x_min:x_min + new_len, y_min:y_min + new_len]
-    #
-    #         rot_h, rot_w = image_ready.shape[:2]
-    #         rot_center = (rot_w // 2, rot_h // 2)
-    #
-    #         # Compute rotation matrix
-    #         rotation_matrix = cv2.getRotationMatrix2D(rot_center, angle, 1)
-    #
-    #         # Rotate the image
-    #         rot_img = cv2.warpAffine(image_ready, rotation_matrix, (rot_w, rot_h))
-    #         rot_img_shape = rot_img.shape[:2]
-    #         rot_img_center = [rot_img_shape[0] // 2, rot_img_shape[1] // 2]
-    #
-    #         # Crop the image to desired resolution
-    #         x_start = rot_img_center[0] - self.resolution // 2
-    #         x_end = rot_img_center[0] + self.resolution // 2
-    #         y_start = rot_img_center[1] - self.resolution // 2
-    #         y_end = rot_img_center[1] + self.resolution // 2
-    #
-    #         cropped_rot_img = rot_img[x_start:x_end, y_start:y_end]
-    #         rot_images.append(cropped_rot_img)
-    #
-    #     return np.array(rot_images)
 
     def rotate_image(self, image):
         # Get the image size
         image_size = image.shape
-        # print(image_size)
         rot_images = []
         angles = np.random.uniform(-180, 180, self.num_output)
         for i in range(self.num_output):
@@ -205,15 +210,13 @@ class PairedMyxo(Dataset):
             new_len = np.max([abs(self.crop_diag * np.cos((angle + 45) / 180 * np.pi)),
                               abs(self.crop_diag * np.sin((angle + 45) / 180 * np.pi))])
             new_len = int(math.ceil(new_len))
-            x_sample = np.random.randint(new_len // 2, image_size[0] - np.ceil(new_len / 2))
-            y_sample = np.random.randint(new_len // 2, image_size[1] - np.ceil(new_len / 2))
 
-            x_min = min([x_sample, 0])
-            y_min = min([y_sample, 0])
+            x_min = np.random.randint(0, image_size[0] - new_len)
+            y_min = np.random.randint(0, image_size[1] - new_len)
 
             cropped_img = image[x_min:x_min + new_len, y_min:y_min + new_len]
             # Vertical flip
-            if random.random() > 0.5:
+            if random.random() < self.flip_rate:
                 cropped_img = cropped_img[::-1, :]
             # Compute rotation matrix
             h, w = cropped_img.shape[:2]
@@ -230,6 +233,54 @@ class PairedMyxo(Dataset):
             rot_images.append(rot_img)
         rot_images = np.array(rot_images)
         return rot_images
+
+    def rotate_image_fixed(self, image, parameters):
+        angles = parameters['angles']
+        x_samples = parameters['x_samples']
+        y_samples = parameters['y_samples']
+        is_flips = parameters['is_flips']
+        rot_images = []
+        for i in range(self.num_output):
+            angle = angles[i]
+            new_len = np.max([abs(self.crop_diag * np.cos((angle + 45) / 180 * np.pi)),
+                              abs(self.crop_diag * np.sin((angle + 45) / 180 * np.pi))])
+            new_len = int(math.ceil(new_len))
+
+            x_min = x_samples[i]
+            y_min = y_samples[i]
+
+            cropped_img = image[x_min:x_min + new_len, y_min:y_min + new_len]
+            if is_flips[i]:
+                cropped_img = cropped_img[::-1, :]
+            h, w = cropped_img.shape[:2]
+            cropped_center = (w // 2, h // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(cropped_center, angle, 1)
+            rot_img = cv2.warpAffine(cropped_img, rotation_matrix, (w, h))
+            rot_img_shape = rot_img.shape
+            img_center = [rot_img_shape[0] // 2, rot_img_shape[1] // 2]
+            rot_img = rot_img[img_center[0] - self.resolution // 2:img_center[0] + self.resolution // 2,
+                      img_center[1] - self.resolution // 2:img_center[1] + self.resolution // 2]
+            rot_images.append(rot_img)
+        rot_images = np.array(rot_images)
+        return rot_images
+
+    def get_rotate_parameters(self, image_size):
+        angles = np.random.uniform(-180, 180, self.num_output)
+        x_samples = []
+        y_samples = []
+        is_flips = []
+        for i in range(self.num_output):
+            angle = angles[i]
+            new_len = np.max([abs(self.crop_diag * np.cos((angle + 45) / 180 * np.pi)),
+                              abs(self.crop_diag * np.sin((angle + 45) / 180 * np.pi))])
+            new_len = int(math.ceil(new_len))
+            x_samples.append(np.random.randint(0, image_size[0] - new_len))
+            y_samples.append(np.random.randint(0, image_size[1] - new_len))
+            if random.random() < self.flip_rate:
+                is_flips.append(True)
+            else:
+                is_flips.append(False)
+        return {"angles": angles, "x_samples": x_samples, "y_samples": y_samples, "is_flips": is_flips}
 
     def rot90_image(self, image):
         # Get the image size
@@ -270,7 +321,7 @@ class PairedMyxo(Dataset):
         return img_out
 
     def get_label(self, idx):
-        label = self._get_raw_labels()[self._raw_idx[idx]]
+        label = self._image_labels[self._raw_idx[idx]]
         return label.copy()
 
     def __getitem__(self, idx, eps=1e-8):
@@ -280,7 +331,10 @@ class PairedMyxo(Dataset):
         assert image.dtype == np.uint8
 
         if self.mode == "random":
-            images = self.rotate_image(image)
+            if self.fixed_rotate is not None:
+                images = self.rotate_image_fixed(image, self.rotate_parameters[self._raw_idx[idx]])
+            else:
+                images = self.rotate_image(image)
         elif self.mode == "rot90":
             images = self.rot90_image(image)
         elif self.mode == 'lrcrop':
@@ -308,7 +362,9 @@ class PairedMyxo(Dataset):
                 rep_images = self.crop_image(rep_image)
             images = np.concatenate([images, rep_images], axis=0)
 
-
+        # image1 = (image1[np.newaxis, :] - image1.mean()) / (image1.std() + eps)
+        # image2 = (image2[np.newaxis, :] - image2.mean()) / (image2.std() + eps)
+        # Normalize images to [0, 1]
         if len(images.shape) == 4:
             images = images.transpose(0, 3, 1, 2)
         else:
@@ -321,6 +377,7 @@ class PairedMyxo(Dataset):
             images = images[:, :, :, ::-1]
         label = self._image_fnames[idx] if self.return_name else self.get_label(idx)
 
+        # img_items = [image_item.copy() for image_item in images]
         return *images, label
 
 # ----------------------------------------------------------------------------

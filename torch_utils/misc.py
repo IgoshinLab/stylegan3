@@ -5,19 +5,22 @@
 # and any modifications thereto.  Any use, reproduction, disclosure or
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
-
+import os.path
 import re
 import contextlib
 import numpy as np
 import torch
 import warnings
 import dnnlib
+import pickle as pkl
+import random
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # Cached construction of constant tensors. Avoids CPU=>GPU copy when the
 # same constant is used multiple times.
 
 _constant_cache = dict()
+
 
 def constant(value, shape=None, dtype=None, device=None, memory_format=None):
     value = np.asarray(value)
@@ -40,13 +43,14 @@ def constant(value, shape=None, dtype=None, device=None, memory_format=None):
         _constant_cache[key] = tensor
     return tensor
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Replace NaN/Inf with specified numerical values.
 
 try:
-    nan_to_num = torch.nan_to_num # 1.8.0a0
+    nan_to_num = torch.nan_to_num  # 1.8.0a0
 except AttributeError:
-    def nan_to_num(input, nan=0.0, posinf=None, neginf=None, *, out=None): # pylint: disable=redefined-builtin
+    def nan_to_num(input, nan=0.0, posinf=None, neginf=None, *, out=None):  # pylint: disable=redefined-builtin
         assert isinstance(input, torch.Tensor)
         if posinf is None:
             posinf = torch.finfo(input.dtype).max
@@ -55,15 +59,16 @@ except AttributeError:
         assert nan == 0
         return torch.clamp(input.unsqueeze(0).nansum(0), min=neginf, max=posinf, out=out)
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # Symbolic assert.
 
 try:
-    symbolic_assert = torch._assert # 1.8.0a0 # pylint: disable=protected-access
+    symbolic_assert = torch._assert  # 1.8.0a0 # pylint: disable=protected-access
 except AttributeError:
-    symbolic_assert = torch.Assert # 1.7.0
+    symbolic_assert = torch.Assert  # 1.7.0
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Context manager to temporarily suppress known warnings in torch.jit.trace().
 # Note: Cannot use catch_warnings because of https://bugs.python.org/issue29672
 
@@ -74,7 +79,8 @@ def suppress_tracer_warnings():
     yield
     warnings.filters.remove(flt)
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Assert that the shape of a tensor matches the given list of integers.
 # None indicates that the size of a dimension is allowed to vary.
 # Performs symbolic assertion when used in torch.jit.trace().
@@ -86,25 +92,29 @@ def assert_shape(tensor, ref_shape):
         if ref_size is None:
             pass
         elif isinstance(ref_size, torch.Tensor):
-            with suppress_tracer_warnings(): # as_tensor results are registered as constants
+            with suppress_tracer_warnings():  # as_tensor results are registered as constants
                 symbolic_assert(torch.equal(torch.as_tensor(size), ref_size), f'Wrong size for dimension {idx}')
         elif isinstance(size, torch.Tensor):
-            with suppress_tracer_warnings(): # as_tensor results are registered as constants
-                symbolic_assert(torch.equal(size, torch.as_tensor(ref_size)), f'Wrong size for dimension {idx}: expected {ref_size}')
+            with suppress_tracer_warnings():  # as_tensor results are registered as constants
+                symbolic_assert(torch.equal(size, torch.as_tensor(ref_size)),
+                                f'Wrong size for dimension {idx}: expected {ref_size}')
         elif size != ref_size:
             raise AssertionError(f'Wrong size for dimension {idx}: got {size}, expected {ref_size}')
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Function decorator that calls torch.autograd.profiler.record_function().
 
 def profiled_function(fn):
     def decorator(*args, **kwargs):
         with torch.autograd.profiler.record_function(fn.__name__):
             return fn(*args, **kwargs)
+
     decorator.__name__ = fn.__name__
     return decorator
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Sampler for torch.utils.data.DataLoader that loops over the dataset
 # indefinitely, shuffling items as it goes.
 
@@ -121,36 +131,77 @@ class InfiniteSampler(torch.utils.data.Sampler):
         self.shuffle = shuffle
         self.seed = seed
         self.window_size = window_size
+        self.names = []
+        self.stratified_dict = {}
+        for image_fname in dataset._image_fnames:
+            self.names.append(os.path.basename(image_fname))
+        if self.dataset.label_dict:
+            sample_dict = pkl.load(open(self.dataset.label_dict, "rb"))
+            phenotype_classes = list(sample_dict.keys())
+            phenotype_classes.sort()
+            fname_idx = {}
+            for idx, fname in enumerate(self.dataset._image_fnames):
+                fname_idx[fname] = idx  # Construct the dict in O(n)
+            for phenotype_class in phenotype_classes:  # Construct the stratified sampling dict in O(n)
+                self.stratified_dict[phenotype_class] = [fname_idx[sample_name] for sample_name in
+                                                         sample_dict[phenotype_class]]
+            del fname_idx
+            self.group_counts = len(self.stratified_dict)
+        else:
+            self.stratified_dict = None
+            self.group_counts = None
 
     def __iter__(self):
-        order = np.arange(len(self.dataset))
-        rnd = None
-        window = 0
-        if self.shuffle:
-            rnd = np.random.RandomState(self.seed)
-            rnd.shuffle(order)
-            window = int(np.rint(order.size * self.window_size))
+        if self.stratified_dict:
+            class_queue = list(self.stratified_dict.keys())
+            random.shuffle(class_queue)
+            cls_idx = 0
+            img_idx = {pheno_cls: 0 for pheno_cls in self.stratified_dict}
+            for pheno_cls in self.stratified_dict:
+                random.shuffle(self.stratified_dict[pheno_cls])
+            while True:
+                pheno_cls = class_queue[cls_idx]
+                cls_idx += 1
+                if cls_idx >= self.group_counts:
+                    cls_idx = 0
+                    random.shuffle(class_queue)
+                yield self.stratified_dict[pheno_cls][img_idx[pheno_cls]]
+                img_idx[pheno_cls] += 1
+                if img_idx[pheno_cls] >= len(self.stratified_dict[pheno_cls]):
+                    img_idx[pheno_cls] = 0
+                    random.shuffle(self.stratified_dict[pheno_cls])
+        else:
+            order = np.arange(len(self.dataset))
+            rnd = None
+            window = 0
+            if self.shuffle:
+                rnd = np.random.RandomState(self.seed)
+                rnd.shuffle(order)
+                window = int(np.rint(order.size * self.window_size))
 
-        idx = 0
-        while True:
-            i = idx % order.size
-            if idx % self.num_replicas == self.rank:
-                yield order[i]
-            if window >= 2:
-                j = (i - rnd.randint(window)) % order.size
-                order[i], order[j] = order[j], order[i]
-            idx += 1
+            idx = 0
+            while True:
+                i = idx % order.size
+                if idx % self.num_replicas == self.rank:
+                    yield order[i]
+                if window >= 2:
+                    j = (i - rnd.randint(window)) % order.size
+                    order[i], order[j] = order[j], order[i]
+                idx += 1
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Utilities for operating with torch.nn.Module parameters and buffers.
 
 def params_and_buffers(module):
     assert isinstance(module, torch.nn.Module)
     return list(module.parameters()) + list(module.buffers())
 
+
 def named_params_and_buffers(module):
     assert isinstance(module, torch.nn.Module)
     return list(module.named_parameters()) + list(module.named_buffers())
+
 
 def copy_params_and_buffers(src_module, dst_module, require_all=False):
     assert isinstance(src_module, torch.nn.Module)
@@ -161,7 +212,8 @@ def copy_params_and_buffers(src_module, dst_module, require_all=False):
         if name in src_tensors:
             tensor.copy_(src_tensors[name].detach()).requires_grad_(tensor.requires_grad)
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Context manager for easily enabling/disabling DistributedDataParallel
 # synchronization.
 
@@ -174,7 +226,8 @@ def ddp_sync(module, sync):
         with module.no_sync():
             yield
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Check DistributedDataParallel consistency across processes.
 
 def check_ddp_consistency(module, ignore_regex=None):
@@ -190,7 +243,8 @@ def check_ddp_consistency(module, ignore_regex=None):
         torch.distributed.broadcast(tensor=other, src=0)
         assert (tensor == other).all(), fullname
 
-#----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
 # Print summary table of module hierarchy.
 
 def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
@@ -201,14 +255,17 @@ def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
     # Register hooks.
     entries = []
     nesting = [0]
+
     def pre_hook(_mod, _inputs):
         nesting[0] += 1
+
     def post_hook(mod, _inputs, outputs):
         nesting[0] -= 1
         if nesting[0] <= max_nesting:
             outputs = list(outputs) if isinstance(outputs, (tuple, list)) else [outputs]
             outputs = [t for t in outputs if isinstance(t, torch.Tensor)]
             entries.append(dnnlib.EasyDict(mod=mod, outputs=outputs))
+
     hooks = [mod.register_forward_pre_hook(pre_hook) for mod in module.modules()]
     hooks += [mod.register_forward_hook(post_hook) for mod in module.modules()]
 
@@ -263,4 +320,4 @@ def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
     print()
     return outputs
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------

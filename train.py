@@ -132,9 +132,6 @@ def parse_comma_separated_list(s):
 @click.option('--cfg',  default="stylegan2",        help='Base configuration',                                      type=click.Choice(['stylegan3-t', 'stylegan3-r', 'stylegan2']), required=True)
 @click.option('--data', help='Training data', metavar='[ZIP|DIR]',
               default="/home/xavier/Documents/dataset/Welch/trainingset2/trainingset2", type=str, required=True)
-@click.option('--label-dict', help='The label dictionary',
-              default='/home/xavier/Documents/dataset/Welch/trainingset2/InceptionV3-labels.pkl', type=str,
-              required=True)
 @click.option('--gpus', help='Number of GPUs to use', metavar='INT', default=1, type=click.IntRange(min=1),
               required=True)
 @click.option('--batch', help='Total batch size', metavar='INT', default=4, type=click.IntRange(min=1), required=True)
@@ -142,6 +139,7 @@ def parse_comma_separated_list(s):
               required=True)
 
 # Optional features.
+@click.option('--label-dict',   help='The label dictionary',                      type=str, default=None)
 @click.option('--cond',         help='Train conditional model', metavar='BOOL',                 type=bool, default=False, show_default=True)
 @click.option('--mirror',       help='Enable dataset x-flips', metavar='BOOL',                  type=bool, default=False, show_default=True)
 @click.option('--aug',          help='Augmentation mode',                                       type=click.Choice(['noaug', 'ada', 'fixed']), default='ada', show_default=True)
