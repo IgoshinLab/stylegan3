@@ -104,7 +104,7 @@ def init_dataset_kwargs(data, label_dict):
         dataset_kwargs = dnnlib.EasyDict(class_name='dataloaders.PairedMyxo.PairedMyxo', resolution=512, resize_by=1.,
                                          path=data, use_labels=True, max_size=None, xflip=False, use_rgb=False,
                                          mode="random",
-                                         label_dict=label_dict)
+                                         label_dict=label_dict, brightness_norm=0)
         dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)  # Subclass of training.dataset.Dataset.
         dataset_kwargs.resolution = dataset_obj.resolution  # Be explicit about resolution.
         dataset_kwargs.use_labels = dataset_obj.has_labels  # Be explicit about labels.
