@@ -114,7 +114,7 @@ def project(
 
         dist = (target_features - synth_features).square().sum()
         #dist = (target_features - synth_features).abs()
-        # TODO: Change the loss function
+
         # Noise regularization.
         reg_loss = 0.0
         for v in noise_bufs.values():
@@ -183,7 +183,6 @@ python projector.py --outdir=out --network=/mnt/data/feature_extraction/featmode
         G = legacy.load_network_pkl(fp)['G_ema'].requires_grad_(False).to(device) # type: ignore
 
     # Load target image.
-    # TODO:
     img_color = 'L'
     target_pil = PIL.Image.open(target_fname).convert(img_color)
     w, h = target_pil.size
